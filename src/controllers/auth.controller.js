@@ -2,7 +2,11 @@ import { User } from "../models/user.model.js";
 import { ApiError } from "../utils/apiError.js";
 import { ApiResponse } from "../utils/apiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { signAccessToken } from "../utils/token.util.js";
+import {
+  hashToken,
+  signAccessToken,
+  signRefreshToken,
+} from "../utils/token.util.js";
 import bcrypt from "bcryptjs";
 import { loginSchema, registerSchema } from "../validators/auth.validator.js";
 import { generateOtp6, hashOtp } from "../utils/otp.js";
@@ -50,7 +54,7 @@ export const register = asyncHandler(async (req, res) => {
   // OTP generate + hash + expiry
   const otp = generateOtp6();
   //   const otpHash = hashOtp(otp);
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  const expiresAt = new Date(Date.now() + 1 * 60 * 1000); // 10 minutes
 
   const user = await User.create({
     name: data.name,
@@ -86,8 +90,8 @@ export const validateOtp = asyncHandler(async (req, res) => {
   const { otp } = req.body;
   const user = await User.findOne({ emailVerifyOtpHash: otp });
   if (!user) throw ApiError.notFound("invalid otp.");
-  if (user.passwordResetExpires < Date.now())
-    throw ApiError(401, "otp expired");
+  if (user?.emailVerifyOtpExpiresAt < Date.now())
+    throw new ApiError(401, "otp expired");
   user.isEmailVerified = true;
   await user.save();
   return res.status(200).json(new ApiResponse(200, "otp verified."));
@@ -106,11 +110,22 @@ export const login = asyncHandler(async (req, res) => {
   if (!user.isActive) throw new ApiError(403, "User is inactive");
   if (!user.isEmailVerified) throw new ApiError(403, "Email not verified");
 
-  const token = signAccessToken(user._id.toString());
+  //   const token = signAccessToken(user._id.toString());
+  const accessToken = signAccessToken(user._id.toString());
+  const refreshToken = signRefreshToken(user._id.toString());
+  user.refreshTokenHash = hashToken(refreshToken);
+  await user.save();
+
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
 
   res.json(
     new ApiResponse(200, "Logged in", {
-      token,
+      accessToken,
       user: {
         id: user._id,
         name: user.name,
@@ -119,4 +134,29 @@ export const login = asyncHandler(async (req, res) => {
       },
     }),
   );
+});
+
+export const signOut = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refreshToken;
+
+  // Clear cookie always (even if no cookie)
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  });
+
+  if (!refreshToken) {
+    return res.json(new ApiResponse(200, "Signed out", { done: true }));
+  }
+
+  const refreshHash = hashToken(refreshToken);
+
+  // Remove stored session
+  await User.updateOne(
+    { _id: req.user._id },
+    { $set: { refreshTokenHash: null } },
+  );
+
+  res.json(new ApiResponse(200, "Signed out", { done: true }));
 });
