@@ -15,6 +15,8 @@ const userSchema = new mongoose.Schema(
     },
 
     passwordHash: { type: String, required: true },
+    passwordResetOtp: { type: String, default: null },
+    passwordResetOtpExpiresAt: { type: Date, default: null },
 
     role: { type: String, enum: Object.values(ROLES), required: true },
 
